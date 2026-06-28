@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { createInsforgeServer } from "@/lib/insforge-server";
 import { getCurrentUser } from "@/lib/auth";
+import { resolveResumeStoragePath } from "@/lib/resume-storage";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   try {
@@ -18,13 +19,25 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       .eq("id", user.id)
       .maybeSingle<{ resume_pdf_url: string | null }>();
 
-    if (!profile?.resume_pdf_url) {
+    const storagePath = resolveResumeStoragePath(
+      profile?.resume_pdf_url,
+      user.id,
+    );
+    if (!storagePath) {
       return NextResponse.json({ error: "No resume on file" }, { status: 404 });
+    }
+
+    // Self-heal legacy rows that stored a full URL instead of the storage key.
+    if (profile?.resume_pdf_url && profile.resume_pdf_url !== storagePath) {
+      await insforge.database
+        .from("profiles")
+        .update({ resume_pdf_url: storagePath })
+        .eq("id", user.id);
     }
 
     const { data: blob, error } = await insforge.storage
       .from("resumes")
-      .download(profile.resume_pdf_url);
+      .download(storagePath);
 
     if (error || !blob) {
       console.error("[api/resume/download]", error);
